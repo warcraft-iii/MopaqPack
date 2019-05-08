@@ -3,12 +3,26 @@
 #include <filesystem>
 #include <fstream>
 
+#if defined(_DEBUG)
+
+#define VERIFY(exp, ret)                                                                                               \
+    if (!(exp))                                                                                                        \
+    {                                                                                                                  \
+        DebugBreak();                                                                                                  \
+        return (ret);                                                                                                  \
+    }                                                                                                                  \
+    void(0)
+
+#else
+
 #define VERIFY(exp, ret)                                                                                               \
     if (!(exp))                                                                                                        \
     {                                                                                                                  \
         return (ret);                                                                                                  \
     }                                                                                                                  \
     void(0)
+
+#endif
 
 using namespace std;
 
@@ -85,6 +99,11 @@ Error run(const string& input, const string& output)
 
     for (auto& file : files)
     {
+        if (filesystem::is_directory(file))
+        {
+            continue;
+        }
+
         HANDLE fileHandle;
         auto name = relative(file, input);
         VERIFY(SFileCreateFile(archive, w2s(name).c_str(), 0, file_size(file), 0, MPQ_FILE_COMPRESS, &fileHandle),
@@ -130,13 +149,9 @@ int main(int argc, char** argv)
     auto output = parser.get<string>("output");
 
     auto err = run(input, output);
-    switch (err)
+    if (err != Error::Ok)
     {
-    case Error::OutputIsFolder:
-        break;
-    default:
         cout << getErrorInfo(err) << endl;
-        break;
     }
     return (int)err;
 }
