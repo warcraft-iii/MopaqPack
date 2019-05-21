@@ -2,6 +2,10 @@
 #include <StormLib.h>
 #include <filesystem>
 #include <fstream>
+#include <unordered_map>
+#include <rapidjson/filereadstream.h>
+#include <rapidjson/document.h>
+#include <cstdio>
 
 #if defined(_DEBUG)
 
@@ -26,6 +30,8 @@
 
 using namespace std;
 
+using FileList = unordered_map<string, filesystem::path>;
+
 string w2s(const wstring& input)
 {
     char buf[2048] = {0};
@@ -38,6 +44,8 @@ enum class Error
     Ok,
     ArgError,
     InputNotFolder,
+    InputReadFailed,
+    InputDocumentError,
     OutputIsFolder,
     OutputCantWrite,
     ArchiveCreateFailed,
@@ -78,35 +86,34 @@ string getErrorInfo(Error err)
     case Error::InputNotFolder:
         return "Input need a folder";
     default:
-        return "";
+        break;
     }
+    return "";
 }
 
-Error run(const string& input, const string& output)
+Error run(const FileList& input, const string& output)
 {
     VERIFY(!filesystem::is_directory(output), Error::OutputIsFolder);
     VERIFY(!filesystem::exists(output) || filesystem::remove(output), Error::OutputCantWrite);
-    VERIFY(filesystem::is_directory(input), Error::InputNotFolder);
+    // VERIFY(filesystem::is_directory(input), Error::InputNotFolder);
 
-    list<filesystem::path> files;
-    for (const auto& p : filesystem::recursive_directory_iterator(input))
-    {
-        files.push_back(p.path());
-    }
+    // list<filesystem::path> files;
+    // for (const auto& p : filesystem::recursive_directory_iterator(input))
+    // {
+    //     files.push_back(p.path());
+    // }
 
     HANDLE archive;
-    VERIFY(SFileCreateArchive(output.c_str(), 0, files.size(), &archive), Error::ArchiveCreateFailed);
+    VERIFY(SFileCreateArchive(output.c_str(), 0, input.size(), &archive), Error::ArchiveCreateFailed);
 
-    for (auto& file : files)
+    for (auto& iter : input)
     {
-        if (filesystem::is_directory(file))
-        {
-            continue;
-        }
+        auto name = iter.first;
+        auto file = iter.second;
 
         HANDLE fileHandle;
-        auto name = relative(file, input);
-        VERIFY(SFileCreateFile(archive, w2s(name).c_str(), 0, file_size(file), 0, MPQ_FILE_COMPRESS, &fileHandle),
+
+        VERIFY(SFileCreateFile(archive, name.c_str(), 0, file_size(file), 0, MPQ_FILE_COMPRESS, &fileHandle),
                Error::ArchiveFileCreateFailed);
 
         ifstream f;
@@ -129,10 +136,54 @@ Error run(const string& input, const string& output)
     return Error::Ok;
 }
 
+Error generateFileList(const string& input, FileList& files)
+{
+    if (filesystem::is_directory(input))
+    {
+        for (const auto& p : filesystem::recursive_directory_iterator(input))
+        {
+            if (is_directory(p.path()))
+            {
+                continue;
+            }
+            auto name = relative(p.path(), input);
+            files[name.u8string()] = p.path();
+        }
+    }
+    else
+    {
+        constexpr auto length = 2048;
+        char buffer[length] = {0};
+        auto fp = fopen(input.c_str(), "r");
+        VERIFY(fp, Error::InputReadFailed);
+
+        rapidjson::FileReadStream stream(fp, buffer, length);
+        rapidjson::Document doc;
+        doc.ParseStream(stream);
+        fclose(fp);
+        VERIFY(doc.IsArray(), Error::InputDocumentError);
+
+        for (auto item = doc.Begin(); item != doc.End(); ++item)
+        {
+            VERIFY(item->IsArray(), Error::InputDocumentError);
+            VERIFY(item->Size() == 2, Error::InputDocumentError);
+
+            auto& name = item->GetArray()[0];
+            auto& file = item->GetArray()[1];
+
+            VERIFY(name.IsString(), Error::InputDocumentError);
+            VERIFY(file.IsString(), Error::InputDocumentError);
+
+            files[name.GetString()] = filesystem::path(file.GetString());
+        }
+    }
+}
+
 int main(int argc, char** argv)
 {
     cmdline::parser parser;
     parser.add<string>("output", 'o', "Output path", true);
+
     if (!parser.parse(argc, argv))
     {
         cout << parser.usage() << endl;
@@ -148,10 +199,17 @@ int main(int argc, char** argv)
     auto input = parser.rest()[0];
     auto output = parser.get<string>("output");
 
-    auto err = run(input, output);
+    FileList fileList;
+    auto err = generateFileList(input, fileList);
     if (err != Error::Ok)
     {
         cout << getErrorInfo(err) << endl;
     }
-    return (int)err;
+
+    err = run(fileList, output);
+    if (err != Error::Ok)
+    {
+        cout << getErrorInfo(err) << endl;
+    }
+    return static_cast<int>(err);
 }

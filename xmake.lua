@@ -21,6 +21,9 @@ target('MopaqPack')
 
     add_files('src/*.cpp')
 
-    add_includedirs('3rd/StormLib/src')
+    add_includedirs(
+        '3rd/StormLib/src',
+        '3rd/rapidjson/include'
+    )
 
     add_deps('StormLib')
