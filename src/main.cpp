@@ -13,7 +13,7 @@
     if (!(exp))                                                                                                        \
     {                                                                                                                  \
         DebugBreak();                                                                                                  \
-        return (ret);                                                                                                  \
+        throw exception(get_error_info(ret));                                                                          \
     }                                                                                                                  \
     void(0)
 
@@ -21,23 +21,13 @@
 
 #define VERIFY(exp, ret)                                                                                               \
     if (!(exp))                                                                                                        \
-    {                                                                                                                  \
-        return (ret);                                                                                                  \
-    }                                                                                                                  \
-    void(0)
+        throw exception(get_error_info(ret));
 
 #endif
 
 using namespace std;
 
 using FileList = unordered_map<string, filesystem::path>;
-
-string w2s(const wstring& input)
-{
-    char buf[2048] = {0};
-    WideCharToMultiByte(CP_UTF8, 0, input.c_str(), (int)input.length(), buf, ARRAYSIZE(buf), nullptr, nullptr);
-    return buf;
-}
 
 enum class Error
 {
@@ -57,7 +47,7 @@ enum class Error
     ArchiveCloseFailed,
 };
 
-string getErrorInfo(Error err)
+const char* get_error_info(Error err)
 {
     switch (err)
     {
@@ -85,23 +75,20 @@ string getErrorInfo(Error err)
         return "Argument error";
     case Error::InputNotFolder:
         return "Input need a folder";
+    case Error::InputReadFailed:
+        return "Input read failed";
+    case Error::InputDocumentError:
+        return "Input document error";
     default:
         break;
     }
     return "";
 }
 
-Error run(const FileList& input, const string& output)
+void run(const FileList& input, const string& output)
 {
     VERIFY(!filesystem::is_directory(output), Error::OutputIsFolder);
     VERIFY(!filesystem::exists(output) || filesystem::remove(output), Error::OutputCantWrite);
-    // VERIFY(filesystem::is_directory(input), Error::InputNotFolder);
-
-    // list<filesystem::path> files;
-    // for (const auto& p : filesystem::recursive_directory_iterator(input))
-    // {
-    //     files.push_back(p.path());
-    // }
 
     HANDLE archive;
     VERIFY(SFileCreateArchive(output.c_str(), 0, input.size(), &archive), Error::ArchiveCreateFailed);
@@ -111,9 +98,9 @@ Error run(const FileList& input, const string& output)
         auto name = iter.first;
         auto file = iter.second;
 
-        HANDLE fileHandle;
+        HANDLE file_handle;
 
-        VERIFY(SFileCreateFile(archive, name.c_str(), 0, file_size(file), 0, MPQ_FILE_COMPRESS, &fileHandle),
+        VERIFY(SFileCreateFile(archive, name.c_str(), 0, file_size(file), 0, MPQ_FILE_COMPRESS, &file_handle),
                Error::ArchiveFileCreateFailed);
 
         ifstream f;
@@ -125,18 +112,16 @@ Error run(const FileList& input, const string& output)
         {
             f.read(buffer, BUFSIZ);
             auto size = f.gcount();
-            VERIFY(SFileWriteFile(fileHandle, buffer, size, MPQ_COMPRESSION_ZLIB), Error::ArchiveFileWriteFailed);
+            VERIFY(SFileWriteFile(file_handle, buffer, size, MPQ_COMPRESSION_ZLIB), Error::ArchiveFileWriteFailed);
         }
-        VERIFY(SFileFinishFile(fileHandle), Error::ArchiveFileFinishFailed);
+        VERIFY(SFileFinishFile(file_handle), Error::ArchiveFileFinishFailed);
     }
 
     VERIFY(SFileFlushArchive(archive), Error::ArchiveFlushFailed);
     VERIFY(SFileCloseArchive(archive), Error::ArchiveCloseFailed);
-
-    return Error::Ok;
 }
 
-Error generateFileList(const string& input, FileList& files)
+void generate_file_list(const string& input, FileList& files)
 {
     if (filesystem::is_directory(input))
     {
@@ -199,17 +184,15 @@ int main(int argc, char** argv)
     auto input = parser.rest()[0];
     auto output = parser.get<string>("output");
 
-    FileList fileList;
-    auto err = generateFileList(input, fileList);
-    if (err != Error::Ok)
+    try
     {
-        cout << getErrorInfo(err) << endl;
+        FileList file_list;
+        generate_file_list(input, file_list);
+        run(file_list, output);
     }
-
-    err = run(fileList, output);
-    if (err != Error::Ok)
+    catch (exception& e)
     {
-        cout << getErrorInfo(err) << endl;
+        cerr << e.what() << endl;
     }
-    return static_cast<int>(err);
+    return 0;
 }
