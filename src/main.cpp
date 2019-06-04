@@ -2,52 +2,14 @@
 #include <StormLib.h>
 #include <filesystem>
 #include <fstream>
-#include <unordered_map>
 #include <rapidjson/filereadstream.h>
 #include <rapidjson/document.h>
 #include <cstdio>
-
-#if defined(_DEBUG)
-
-#define VERIFY(exp, ret)                                                                                               \
-    if (!(exp))                                                                                                        \
-    {                                                                                                                  \
-        DebugBreak();                                                                                                  \
-        throw exception(get_error_info(ret));                                                                          \
-    }                                                                                                                  \
-    void(0)
-
-#else
-
-#define VERIFY(exp, ret)                                                                                               \
-    if (!(exp))                                                                                                        \
-        throw exception(get_error_info(ret));
-
-#endif
+#include "def.h"
 
 using namespace std;
 
-using FileList = unordered_map<string, filesystem::path>;
-
-enum class Error
-{
-    Ok,
-    ArgError,
-    InputNotFolder,
-    InputReadFailed,
-    InputDocumentError,
-    OutputIsFolder,
-    OutputCantWrite,
-    ArchiveCreateFailed,
-    ArchiveFileCreateFailed,
-    ReadFileFailed,
-    ArchiveFileWriteFailed,
-    ArchiveFileFinishFailed,
-    ArchiveFlushFailed,
-    ArchiveCloseFailed,
-};
-
-const char* get_error_info(Error err)
+const char* GetErrorInfo(Error err)
 {
     switch (err)
     {
@@ -85,23 +47,49 @@ const char* get_error_info(Error err)
     return "";
 }
 
-void run(const FileList& input, const string& output)
+void Run(const FileList& input, const string& output, const Params& params)
 {
     VERIFY(!filesystem::is_directory(output), Error::OutputIsFolder);
     VERIFY(!filesystem::exists(output) || filesystem::remove(output), Error::OutputCantWrite);
 
     HANDLE archive;
-    VERIFY(SFileCreateArchive(output.c_str(), 0, input.size(), &archive), Error::ArchiveCreateFailed);
+    SFILE_CREATE_MPQ ci;
+    DWORD flags = 0;
+    memset(&ci, 0, sizeof(SFILE_CREATE_MPQ));
+    ci.cbSize = sizeof(SFILE_CREATE_MPQ);
+    ci.dwMpqVersion = (flags & MPQ_CREATE_ARCHIVE_VMASK) >> FLAGS_TO_FORMAT_SHIFT;
+    ci.dwStreamFlags = STREAM_PROVIDER_FLAT | BASE_PROVIDER_FILE;
+    ci.dwFileFlags1 = flags & MPQ_CREATE_LISTFILE ? MPQ_FILE_DEFAULT_INTERNAL : 0;
+    ci.dwFileFlags2 = flags & MPQ_CREATE_ATTRIBUTES ? MPQ_FILE_DEFAULT_INTERNAL : 0;
+    ci.dwFileFlags3 = flags & MPQ_CREATE_SIGNATURE ? MPQ_FILE_DEFAULT_INTERNAL : 0;
+    ci.dwAttrFlags =
+        flags & MPQ_CREATE_ATTRIBUTES ? MPQ_ATTRIBUTE_CRC32 | MPQ_ATTRIBUTE_FILETIME | MPQ_ATTRIBUTE_MD5 : 0;
+    ci.dwSectorSize = ci.dwMpqVersion >= MPQ_FORMAT_VERSION_3 ? 0x4000 : 0x1000;
+    ci.dwRawChunkSize = ci.dwMpqVersion >= MPQ_FORMAT_VERSION_4 ? 0x4000 : 0;
+    ci.dwMaxFileCount = input.size();
+
+    if (ci.dwMpqVersion >= MPQ_FORMAT_VERSION_3 && flags & MPQ_CREATE_ATTRIBUTES)
+    {
+        ci.dwAttrFlags |= MPQ_ATTRIBUTE_PATCH_BIT;
+    }
+
+    if (params.file_list)
+    {
+        ci.dwFileFlags1 = MPQ_FILE_DEFAULT_INTERNAL;
+    }
+
+    VERIFY(SFileCreateArchive2(output.c_str(), &ci, &archive), Error::ArchiveCreateFailed);
 
     for (auto& iter : input)
     {
         auto name = iter.first;
         auto file = iter.second;
 
-        HANDLE file_handle;
+        HANDLE fileHandle;
 
-        VERIFY(SFileCreateFile(archive, name.c_str(), 0, file_size(file), 0, MPQ_FILE_COMPRESS, &file_handle),
-               Error::ArchiveFileCreateFailed);
+        VERIFY(
+            SFileCreateFile(archive, name.c_str(), 0, filesystem::file_size(file), 0, MPQ_FILE_COMPRESS, &fileHandle),
+            Error::ArchiveFileCreateFailed);
 
         ifstream f;
         f.open(file.c_str(), ios::in | ios::binary);
@@ -112,16 +100,16 @@ void run(const FileList& input, const string& output)
         {
             f.read(buffer, BUFSIZ);
             auto size = f.gcount();
-            VERIFY(SFileWriteFile(file_handle, buffer, size, MPQ_COMPRESSION_ZLIB), Error::ArchiveFileWriteFailed);
+            VERIFY(SFileWriteFile(fileHandle, buffer, size, MPQ_COMPRESSION_ZLIB), Error::ArchiveFileWriteFailed);
         }
-        VERIFY(SFileFinishFile(file_handle), Error::ArchiveFileFinishFailed);
+        VERIFY(SFileFinishFile(fileHandle), Error::ArchiveFileFinishFailed);
     }
 
     VERIFY(SFileFlushArchive(archive), Error::ArchiveFlushFailed);
     VERIFY(SFileCloseArchive(archive), Error::ArchiveCloseFailed);
 }
 
-void generate_file_list(const string& input, FileList& files)
+void GenerateFileList(const string& input, FileList& files)
 {
     if (filesystem::is_directory(input))
     {
@@ -167,7 +155,8 @@ void generate_file_list(const string& input, FileList& files)
 int main(int argc, char** argv)
 {
     cmdline::parser parser;
-    parser.add<string>("output", 'o', "Output path", true);
+    parser.add<string>(PARAM_OUTPUT, 'o', "Output path", true);
+    parser.add<bool>(PARAM_FILELIST, 'f', "Generate file list", false, false);
 
     if (!parser.parse(argc, argv))
     {
@@ -182,13 +171,14 @@ int main(int argc, char** argv)
     }
 
     auto input = parser.rest()[0];
-    auto output = parser.get<string>("output");
+    auto output = parser.get<string>(PARAM_OUTPUT);
 
     try
     {
-        FileList file_list;
-        generate_file_list(input, file_list);
-        run(file_list, output);
+        Params params = {parser.get<bool>(PARAM_FILELIST)};
+        FileList fileList;
+        GenerateFileList(input, fileList);
+        Run(fileList, output, params);
     }
     catch (exception& e)
     {
