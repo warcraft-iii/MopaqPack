@@ -4,3 +4,6 @@
 [submodule "3rd/rapidjson"]
 	path = 3rd/rapidjson
 	url = https://github.com/Tencent/rapidjson.git
+[submodule "3rd/cmdline"]
+	path = 3rd/cmdline
+	url = https://github.com/ubnt-intrepid/cmdline.git

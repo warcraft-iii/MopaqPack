@@ -127,7 +127,11 @@ void GenerateFileList(const string& input, FileList& files)
     {
         constexpr auto length = 2048;
         char buffer[length] = {0};
-        auto fp = fopen(input.c_str(), "r");
+        FILE* fp;
+        if (fopen_s(&fp, input.c_str(), "r") != 0)
+        {
+            return;
+        }
         VERIFY(fp, Error::InputReadFailed);
 
         rapidjson::FileReadStream stream(fp, buffer, length);
@@ -156,7 +160,7 @@ int main(int argc, char** argv)
 {
     cmdline::parser parser;
     parser.add<string>(PARAM_OUTPUT, 'o', "Output path", true);
-    parser.add<bool>(PARAM_FILELIST, 'f', "Generate file list", false, false);
+    parser.add(PARAM_FILELIST, 'f', "Generate file list");
 
     if (!parser.parse(argc, argv))
     {
